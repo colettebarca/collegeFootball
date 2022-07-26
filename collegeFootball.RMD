@@ -1,0 +1,920 @@
+---
+title: "Group Three Final Project"
+authors: Colette Barca, Keith Osani, Nisha Srishan, and William Wulster
+date: "Due: December 11, 2020"
+output: html_document
+---
+# Data Inspection and Cleaning
+Before conducting an analysis, it is imperative that we inspect the data.
+```{r Load the Necessary Libraries, include=FALSE}
+library(dplyr)
+library(tidyr)
+```
+```{r Read in the Data, include=FALSE}
+recruits_data <- read.csv("recruits_final.csv")
+```
+We begin by loading the necessary libraries, reading in the data, and checking for missing data. 
+```{r First Check for Missing Data}
+dim(recruits_data)
+
+dim(na.exclude(recruits_data))
+```
+We find that there are 1,948 instances with missing information. However, not all 42 variable columns are necessary for our analysis. Hence, we will modify the dataset to only include variables needed for our analysis.
+```{r Only Include Variables Needed for Analysis}
+selected_recruits_data = subset(recruits_data, select = c("class", "state", "position", "height_in", "weight", "star_ct", "composite_rtg", "nat_rk", "pos_rk", "st_rk", "cs_power_conf", "cs_in_homestate", "pos_off", "pos_def", "pos_skilled", "state_hotbed", "incomeperhousehold", "averagehousevalue", "distance_to_school"))
+
+dim(selected_recruits_data)
+
+dim(na.exclude(selected_recruits_data))
+
+sapply(selected_recruits_data, function(x) sum(is.na(x)))
+```
+Notice that the number of observations with missing data has reduced to 817 recruits. The majority of columns with missing data are the `height_in`, `weight`, `incomeperhousehold`, and `averagehousevalue` predictors. We will impute values for these missing entries before proceeding with our analysis.
+
+## Handle the Missing Data
+We will impute the grouped mean for missing `height_in` and `weight`, based on each instance's `position`, `class`, and `star_ct` values.
+```{r Impute for Missing height_in and weight}
+selected_recruits_data <- selected_recruits_data%>% 
+  group_by(position,class,star_ct) %>% 
+  mutate(weight = ifelse(is.na(weight), mean(weight, na.rm = TRUE), weight),
+         height_in = ifelse(is.na(height_in), 
+                            mean(height_in, na.rm = TRUE), height_in))
+```
+We will impute the grouped median for `averagehousevalue` and `incomeperhousehold`, based on each instance's `state` and `class` values.
+```{r}
+selected_recruits_data <- selected_recruits_data%>% 
+  group_by(state,class) %>% 
+  mutate(averagehousevalue = 
+           ifelse(is.na(averagehousevalue), 
+                  median(averagehousevalue, na.rm = TRUE), averagehousevalue),
+         incomeperhousehold =
+           ifelse(is.na(incomeperhousehold),
+                  median(incomeperhousehold, na.rm = TRUE), incomeperhousehold))
+```
+We will now recheck the dimensions of our dataset to see if any missing entries remain.
+```{r Second Check for Missing Data}
+dim(selected_recruits_data)
+
+dim(na.exclude(selected_recruits_data))
+
+sapply(selected_recruits_data, function(x) sum(is.na(x)))
+```
+We find that there remain 6 instances with missing information. We will now drop these remaining observations.
+```{r Drop Remaining Observations with Missing Data}
+selected_recruits_data <- drop_na(selected_recruits_data)
+
+# Verify Missing Data was Removed
+dim(selected_recruits_data)
+
+dim(na.exclude(selected_recruits_data))
+```
+Now that all the entries with missing data have been accounted for, we will set aside the 2019 observations for final testing.
+```{r Set Aside the 2019 Observations for Final Testing}
+training = as.vector(selected_recruits_data["class"] < 2019)
+saved_data = selected_recruits_data[!training,]
+dim(saved_data)
+```
+We have 2,391 recruits set aside for model deployment. We will now rename the 
+remaining data and assess the dimensions.
+```{r Rename the Remaining Data}
+remaining_data = selected_recruits_data[training,]
+dim(remaining_data)
+```
+We have 9,268 observations to use for model fitting.
+
+We will now remove the three variables that are not needed for analysis: `class`, `state`, and `position` from both datasets.
+```{r Remove the Unneeded Variables}
+saved_data = subset(saved_data, select = c("height_in", "weight", "star_ct",
+                  "composite_rtg", "nat_rk", "pos_rk", "st_rk", 
+                  "cs_power_conf", "cs_in_homestate", "pos_off", "pos_def",
+                  "pos_skilled", "state_hotbed", "incomeperhousehold",
+                  "averagehousevalue", "distance_to_school"))
+dim(saved_data)
+
+remaining_data = subset(remaining_data, select = c("height_in", "weight", 
+                  "star_ct", "composite_rtg", "nat_rk", "pos_rk", "st_rk",
+                  "cs_power_conf", "cs_in_homestate", "pos_off", "pos_def",
+                  "pos_skilled", "state_hotbed", "incomeperhousehold",
+                  "averagehousevalue", "distance_to_school"))
+dim(remaining_data)
+```
+Notice that the rows in both datasets have remained the same, but their number of columns have been reduced to 16, as expected.
+
+We now set a random seed so that the resulting classification models can be accurately compared in order to select the best model.
+```{r Set a Random Seed}
+set.seed (123)
+```
+We randomly split the data for training and testing data in a 2:1 ratio.
+```{r Randomly Split the Data for Training and Testing Data}
+Index = sample(1:nrow(remaining_data), size = 0.66*nrow(remaining_data))
+
+# * Training Data *
+TrainData = remaining_data[Index,] 
+dim(TrainData)
+
+# * Testing Data *
+TestData = remaining_data[-Index,]
+dim(TestData) 
+```
+Notice that there are 6,116 observations in our training set and 3,152 observations in our testing set.
+</br>
+</br>
+```{r Visually Appealing Confusion Matrix Function, include=FALSE}
+library(caret)
+
+draw_confusion_matrix <- function(cm, title_txt, mse) {
+  
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type="n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title(title_txt, cex.main=2)
+  
+  # create the matrix 
+  rect(150, 430, 240, 370, col='#3fbbd0')
+  text(195, 435, 'Not Power 5', cex=1.2)
+  rect(250, 430, 340, 370, col='#d0543f')
+  text(295, 435, 'Power 5', cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col='#d0543f')
+  rect(250, 305, 340, 365, col='#3fbbd0')
+  text(140, 400, 'Not Power 5', cex=1.2, srt=90)
+  text(140, 335, 'Power 5', cex=1.2, srt=90)
+  
+  # add in the cm results 
+  res <- as.numeric(cm$table)
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+  
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "Accuracy", xaxt='n', yaxt='n')
+  
+  text(30, 50, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 35, round(as.numeric(cm$overall[1]), 4), cex=1.4)
+  text(70, 50, "MSE", cex=1.5, font=2)
+  text(70, 35, round(mse, 4), cex=1.4)
+}  
+```
+# Classification Tree
+The first classification method that we will employ is the classification tree technique.
+```{r Load the Classification Tree Libraries, include=FALSE}
+library (ISLR)
+library(tree)
+```
+## Unpruned
+```{r Fit the Unpruned Model}
+tree_recruits = tree(factor(cs_power_conf)~., TrainData)
+tree_recruits
+
+plot(tree_recruits)
+text(tree_recruits, pretty=0)
+
+summary(tree_recruits)
+```
+</br>
+### Confusion Matrix
+```{r Unpruned Confusion Matrix}
+tree_pred = predict(tree_recruits, TestData, type = "class")
+table(tree_pred, TestData$cs_power_conf)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Unpruned to the Test Data}
+tree.pred = predict(tree_recruits, TestData, type = "vector")[,2]
+```
+</br>
+### MSE
+```{r Unpruned MSE}
+mean((tree.pred - TestData$cs_power_conf)^2)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Unpruned}
+# MSE Information
+tree_mse = mean((tree.pred - TestData$cs_power_conf)^2)
+
+# Confusion Matrix Information
+cm <- confusionMatrix(data = tree_pred, 
+                      reference = factor(TestData$cs_power_conf))
+
+draw_confusion_matrix(cm,"Classification Tree Model", tree_mse)
+```
+</br>
+## Pruning the Classification Tree
+```{r Pruning the Classification Tree}
+cv_recruits = cv.tree(tree_recruits, FUN = prune.misclass)
+plot(cv_recruits$size, cv_recruits$dev, type = "b")
+```
+</br>
+### Prune to 2 Terminal Nodes
+```{r Prune to 2 Terminal Nodes}
+prune_recruits = prune.misclass(tree_recruits, best = 2)
+plot(prune_recruits)
+text(prune_recruits, pretty = 0)
+```
+</br>
+### Confusion Matrix
+```{r Pruned Confusion Matrix}
+tree_pred_prune = predict(prune_recruits, TestData, type = "class")
+table(tree_pred_prune, TestData$cs_power_conf)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Pruned  to Test Data}
+tree.pred_prune = predict(prune_recruits, TestData, type = "vector")[,2]
+```
+</br>
+### MSE
+```{r Pruned MSE}
+mean((tree.pred_prune - TestData$cs_power_conf)^2)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Pruned}
+# MSE Information
+tree_prune_mse = mean((tree.pred_prune - TestData$cs_power_conf)^2)
+
+# Confusion Matrix Information
+cm <- confusionMatrix(data = tree_pred_prune, 
+                      reference = factor(TestData$cs_power_conf))
+
+draw_confusion_matrix(cm,"Pruned Classification Tree Model", tree_prune_mse)
+```
+</br>
+## Bagging
+```{r Load the Bagging and Random Forest Library, include=FALSE}
+library(randomForest)
+```
+```{r Fit the Bagging Model}
+bag_recruits = randomForest(factor(cs_power_conf) ~., data=TrainData, mtry=15,
+                           importance =TRUE)
+bag_recruits
+```
+</br>
+### Confusion Matrix
+```{r Bagging Confusion Matrix}
+bag_pred_cm= predict(bag_recruits, TestData)
+table(bag_pred_cm, TestData$cs_power_conf)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Bagging to Test Data}
+bag_pred = predict(bag_recruits, TestData, type="prob")[,2]
+```
+</br>
+### MSE
+```{r Bagging MSE}
+mean((bag_pred - TestData$cs_power_conf)^2)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Bagging}
+# MSE Information
+bagging_mse = mean((bag_pred - TestData$cs_power_conf)^2)
+
+# Confusion Matrix Information
+cm <- confusionMatrix(data = bag_pred_cm, 
+                      reference = factor(TestData$cs_power_conf))
+
+draw_confusion_matrix(cm,"Bagging", bagging_mse)
+```
+</br>
+## Random Forest
+```{r Fit the Random Forest Model}
+rf_recruits = randomForest(factor(cs_power_conf)~., 
+                       data = TrainData, 
+                       mtry = 5,
+                       importance = TRUE)
+rf_recruits
+```
+</br>
+### Confusion Matrix
+```{r Random Forest Confusion Matrix}
+rf_pred_cm= predict(rf_recruits, TestData)
+table(rf_pred_cm, TestData$cs_power_conf)
+```
+</br>
+### Important Variables
+```{r Important Variables}
+importance(rf_recruits) 
+varImpPlot(rf_recruits)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Random Forest to Test Data}
+random_forest_estimate = predict(rf_recruits, TestData, type="prob")[,2]
+```
+</br>
+### MSE
+```{r Random Forest MSE}
+mean((random_forest_estimate-TestData$cs_power_conf)^2)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Random Forest}
+# MSE Information
+rf_mse = mean((random_forest_estimate-TestData$cs_power_conf)^2)
+
+# Confusion Matrix Information
+cm <- confusionMatrix(data = rf_pred_cm, 
+                      reference = factor(TestData$cs_power_conf))
+
+draw_confusion_matrix(cm,"Random Forest", rf_mse)
+```
+</br>
+## Boosting
+```{r Load the Boosting Library, include=FALSE}
+library(gbm)
+```
+```{r Fit the Boosting Model}
+
+boost_recruits = gbm(cs_power_conf~., 
+                 data = TrainData, 
+                 distribution = "bernoulli",
+                 n.trees = 5000,
+                 interaction.depth = 4)
+summary(boost_recruits)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Boosting to Test Data}
+boost_estimate = predict(boost_recruits, TestData, n.trees = 5000, 
+                         type="response")
+```
+</br>
+### MSE
+```{r Boosting MSE}
+mean((boost_estimate - TestData$cs_power_conf)^2)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Boosting}
+# MSE Information
+boosting_mse = mean((boost_estimate - TestData$cs_power_conf)^2)
+
+# Confusion Matrix Information
+boost_prediction = ifelse(boost_estimate >= .5, 1, 0)
+cm <- confusionMatrix(data = factor(boost_prediction), 
+                      reference = factor(TestData$cs_power_conf))
+
+draw_confusion_matrix(cm,"Boosting", boosting_mse)
+```
+</br>
+</br>
+# SVM
+</br>
+The second classification method that we will employ is the Support Vector Machine (SVM) technique.
+```{r Load the SVM Library, include=FALSE}
+library(e1071)
+```
+## Linear Kernel
+```{r Fit Linear Kernel Model}
+svm_linear_model = svm(factor(cs_power_conf)~., data = TrainData, kernel="linear", probability=TRUE, scale=TRUE)
+
+summary(svm_linear_model)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Linear Kernel to the Test Data}
+svm_linear_predict <- predict(svm_linear_model, TestData, probability = TRUE, scale=TRUE)
+```
+</br>
+### Confusion Matrix
+``` {r Linear Confusion Matrix}
+table(predict = svm_linear_predict, true = TestData$cs_power_conf)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Linear Kernel}
+cm <- confusionMatrix(data = svm_linear_predict, reference = factor(TestData$cs_power_conf))
+
+linear_predict = attr(svm_linear_predict, "probabilities")[,1]
+
+svm_linear_mse = mean((linear_predict - TestData$cs_power_conf)^2)
+
+draw_confusion_matrix(cm,"SVM Linear Model", svm_linear_mse)
+```
+</br>
+### Tune the SVM Linear Model
+```{r Tune the SVM Linear Model}
+set.seed(1)
+svm_linear_tune = tune(svm, 
+                factor(cs_power_conf) ~ ., 
+                data = TrainData, 
+                kernel = "linear", 
+                ranges = list(cost = c(0.001, 0.01, 0.1, 1,5,10,100)),
+                Scale= TRUE, 
+                probability=TRUE)
+
+summary(svm_linear_tune)
+```
+</br>
+### Set Aside the Best Model From the Cross Validation Above
+```{r Set Aside the Best Model Linear}
+best_linear_svm = svm_linear_tune$best.model
+summary(best_linear_svm)
+
+```
+</br>
+### Apply to the Test Data
+```{r Apply Tuned SVM Linear to the Test Data}
+svm_predict_linear_best = predict(best_linear_svm , newdata = TestData, probability=TRUE, scale=TRUE)
+table(predicted = svm_predict_linear_best, true = TestData$cs_power_conf)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Tuned Linear Kernel}
+cm <- confusionMatrix(data = svm_predict_linear_best, reference = factor(TestData$cs_power_conf))
+
+linear_best = attr(svm_predict_linear_best, "probabilities")[,1]
+
+svm_linear_mse2 = mean((linear_best - TestData$cs_power_conf)^2)
+
+draw_confusion_matrix(cm,"SVM Linear Model Best", svm_linear_mse2)
+```
+</br>
+## Radial Kernel
+```{r Fit Radial Kernel Model}
+svm_radial_model = svm(factor(cs_power_conf)~., data = TrainData, kernel="radial", probability=TRUE, scale=TRUE)
+
+summary(svm_radial_model)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Radial Kernel to the Test Data}
+svm_radial_predict <- predict(svm_radial_model, TestData, probability=TRUE, scale=TRUE)
+```
+</br>
+### Confusion Matrix
+``` {r Radial Confusion Matrix}
+table(predict = svm_radial_predict, true = TestData$cs_power_conf)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Radial Kernel}
+cm <- confusionMatrix(data = svm_radial_predict, reference = factor(TestData$cs_power_conf))
+
+radial_probs = attr(svm_radial_predict, "probabilities")[,1]
+
+svm_radial_mse = mean((radial_probs - TestData$cs_power_conf)^2)
+
+draw_confusion_matrix(cm,"SVM Radial Model", svm_radial_mse)
+```
+</br>
+### Tune the SVM Radial Model
+```{r Tune the SVM Radial Model}
+svm_radial_tune = tune(svm, 
+                factor(cs_power_conf) ~ ., 
+                data = TrainData, 
+                kernel = "radial", 
+                ranges = list(cost = c(0.001, 0.01, 0.1, 1,5,10,100), gamma = c(0.0625, 0.1875, 0.5, 1.75, 5, 15)), 
+                Scale= TRUE, 
+                probability=TRUE)
+
+summary(svm_radial_tune)
+```
+</br>
+### Set Aside the Best Model From the Cross Validation Above
+```{r Set Aside the Best Model Radial}
+best_radial_svm = svm_radial_tune$best.model
+summary(best_radial_svm)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Tuned Radial Model to the Test Data}
+svm_predict_radial_best = predict(best_radial_svm , newdata = TestData, probability=TRUE, scale=TRUE)
+```
+</br>
+### Confusion Matrix
+``` {r Best Radial Confusion Matrix}
+table(predicted = svm_predict_radial_best, true = TestData$cs_power_conf)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Tuned Radial Kernel}
+cm <- confusionMatrix(data = svm_predict_radial_best, reference = factor(TestData$cs_power_conf))
+
+radial_probs2 = attr(svm_predict_radial_best, "probabilities")[,1]
+
+svm_radial_mse2 = mean((radial_probs2 - TestData$cs_power_conf)^2)
+
+draw_confusion_matrix(cm,"SVM Radial Best Model", svm_radial_mse2)
+
+```
+</br>
+</br>
+# Logistic Regression
+</br>
+The third classification method that we will employ is the Logistic Regression technique.
+```{r Fit Logistic Regression Model}
+logistic.model <- glm(factor(cs_power_conf)~., family="binomial",data=TrainData)
+summary(logistic.model)
+```
+</br>
+### Apply to the Test Data
+```{r Apply glm to Test Data}
+glm_predict = predict(logistic.model, type="response", TestData)
+glmMSE = mean((glm_predict - TestData$cs_power_conf)^2)
+glmMSE
+```
+</br>
+### Confusion Matrix
+```{r glm Confusion Matrix}
+probabilities <- glm_predict
+preds <- rep("other", nrow(TestData))
+preds[probabilities >0.5] = "Power 5"
+confusion_matrix <- table(preds, TestData$cs_power_conf)
+confusion_matrix
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: glm}
+# MSE Information
+glmMSE = mean((glm_predict - TestData$cs_power_conf)^2)
+
+# Confusion Matrix Information
+glm_predict = ifelse(glm_predict >= .5, 1, 0)
+cm <- confusionMatrix(data = factor(glm_predict), 
+                      reference = factor(TestData$cs_power_conf))
+
+draw_confusion_matrix(cm,"GLM Model", glmMSE)
+```
+</br>
+## Refit with Predictors with p-values <= 0.05
+```{r Fit glm Refit}
+logistic.model2 <- glm(factor(cs_power_conf)~ composite_rtg + nat_rk + 
+                         st_rk + pos_off + pos_def + pos_skilled + 
+                         incomeperhousehold + distance_to_school,
+                       family="binomial",data=TrainData)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Refit glm to Test Data}
+glm_predict2 = predict(logistic.model2, type="response", TestData)
+```
+</br>
+### MSE
+```{r glm Refit MSE}
+glmMSE2 = mean((glm_predict2 - TestData$cs_power_conf)^2)
+glmMSE2
+```
+</br>
+## Refit with Predictors with p-values <= 0.001
+```{r Fit glm Second Refit}
+logistic.model3 <- glm(factor(cs_power_conf)~ nat_rk + 
+                         st_rk + pos_off + pos_def + incomeperhousehold +
+                         distance_to_school, family="binomial",data=TrainData)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Second Refit glm to Test Data}
+glm_predict3 = predict(logistic.model3, type="response", TestData)
+```
+</br>
+### MSE
+```{r glm Second Refit MSE}
+glmMSE3 = mean((glm_predict3 - TestData$cs_power_conf)^2)
+glmMSE3
+```
+</br>
+</br>
+# GAM
+</br>
+The fourth and final classification method that we will employ is the Generalized Additive Model (GAM).
+```{r Load the GAM Library, include=FALSE}
+library(gam)
+```
+```{r Fit a Logistic Regression GAM Using All the Variables}
+gam.full = gam(I(factor(cs_power_conf))~ ., 
+               family=binomial, data=TrainData)
+```
+</br>
+### Apply to the Test Data
+```{r Apply Full GAM to the Test Data}
+prediction = predict(gam.full, type="response", newdata = TestData)
+summary(gam.full)
+```
+</br>
+### MSE
+```{r Full GAM MSE}
+mean((prediction - TestData$cs_power_conf)^2)
+```
+</br>
+### Confusion Matrix
+```{r Full GAM Confusion Matrix}
+table(prediction = ifelse(prediction >= .5, 1, 0), actual =TestData$cs_power_conf)
+```
+</br>
+### Model Accuracy
+```{r Full GAM Model Accuracy}
+(974 + 1639) / (length(TestData$cs_power_conf))
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: GAM}
+# MSE Information
+gam_mse = mean((prediction - TestData$cs_power_conf)^2)
+
+# Confusion Matrix Information
+prediction = ifelse(prediction >= .5, 1, 0)
+cm <- confusionMatrix(data = factor(prediction), 
+                      reference = factor(TestData$cs_power_conf))
+
+draw_confusion_matrix(cm,"GAM Model", gam_mse)
+```
+</br>
+## Refit Try #1 with p-values <= 0.001
+```{r Fit GAM Refit #1}
+gam.refit1 = gam(I(factor(cs_power_conf))~ height_in + star_ct + composite_rtg +
+                 nat_rk + pos_rk + st_rk + pos_def + incomeperhousehold +
+                   distance_to_school, family=binomial, data=TrainData)
+```
+</br>
+### Apply to the Test Data
+```{r Apply GAM Refit #1 to the Test Data}
+prediction.refit1 = predict(gam.refit1, type="response", newdata = TestData)
+```
+</br>
+### MSE
+```{r GAM Refit #1 MSE}
+mean((prediction.refit1 - TestData$cs_power_conf)^2)
+```
+</br>
+### Confusion Matrix
+```{r GAM Refit #1 Confusion Matrix}
+table(prediction.refit1 = ifelse(prediction.refit1 >= .5, 1, 0), 
+      actual = TestData$cs_power_conf)
+```
+</br>
+### Model Accuracy
+```{r GAM Refit #1 Model Accuracy}
+(974 + 1630) / (length(TestData$cs_power_conf))
+```
+</br>
+## Refit Try #2 with p-values <= 0.01
+```{r Fit GAM Refit #2}
+gam.refit2 = gam(I(factor(cs_power_conf))~ height_in + star_ct + composite_rtg +
+                 nat_rk + pos_rk + st_rk + cs_in_homestate + pos_def + 
+                   incomeperhousehold + distance_to_school, 
+                family=binomial, data=TrainData)
+```
+</br>
+### Apply to the Test Data
+```{r Apply GAM Refit #2 to the Test Data}
+prediction.refit2 = predict(gam.refit2, type="response", newdata = TestData)
+```
+</br>
+### MSE
+```{r GAM Refit #2 MSE}
+mean((prediction.refit2 - TestData$cs_power_conf)^2)
+```
+</br>
+### Confusion Matrix
+```{r GAM Refit #2 Confusion Matrix}
+table(prediction.refit2 = ifelse(prediction.refit2 >= .5, 1, 0), 
+      actual = TestData$cs_power_conf)
+```
+</br>
+### Model Accuracy
+```{r GAM Refit #2 Model Accuracy}
+(977 + 1634) / (length(TestData$cs_power_conf))
+```
+</br>
+## Refit Try #3 with p-values <= 0.05
+```{r Fit GAM Refit #3}
+gam.refit3 = gam(I(factor(cs_power_conf))~ height_in + star_ct + composite_rtg +
+                 nat_rk + pos_rk + st_rk + cs_in_homestate + pos_off + pos_def + 
+                   state_hotbed + incomeperhousehold + averagehousevalue +
+                  distance_to_school, family=binomial, data=TrainData)
+```
+</br>
+### Apply to the Test Data
+```{r Apply GAM Refit #3 to the Test Data}
+prediction.refit3 = predict(gam.refit3, type="response", newdata = TestData)
+```
+</br>
+### MSE
+```{r GAM Refit #3 MSE}
+mean((prediction.refit3 - TestData$cs_power_conf)^2)
+```
+</br>
+### Confusion Matrix
+```{r GAM Refit #3 Confusion Matrix}
+table(prediction.refit3 = ifelse(prediction.refit3 >= .5, 1, 0), 
+      actual = TestData$cs_power_conf)
+```
+</br>
+### Model Accuracy
+```{r GAM Refit #3 Model Accuracy}
+(973 + 1640) / (length(TestData$cs_power_conf))
+```
+</br>
+</br>
+# Refit on Union of TrainData and TestData
+</br>
+</br>
+After comparing the MSEs and accuracy percentages of all the models fitted above, we can declare the Random Forest model as the best method.
+</br>
+</br>
+We can now fit a Random Forest Classification Tree using all the variables on the union of the training and testing datasets.
+```{r Fit a Random Forest Classification Tree Using All the Variables}
+rf_recruits.final = randomForest(factor(cs_power_conf)~.,
+                                 data = remaining_data, 
+                                 mtry = 5,
+                                 importance = TRUE)
+rf_recruits.final
+```
+</br>
+### Apply to the Data We Set Aside
+```{r Apply to the Data We Set Aside}
+rf_final_estimate = predict(rf_recruits.final, saved_data, type="prob")[,2]
+```
+</br>
+### MSE
+```{r Final Model MSE}
+mean((rf_final_estimate - saved_data$cs_power_conf)^2)
+# 0.1142524
+```
+</br>
+# Change mtry
+In an attempt to find the best possible model, we will now experiment with different values of mtry.
+## mtry = 6
+```{r Attempt 1}
+final.test1 = randomForest(factor(cs_power_conf)~., 
+                          data = remaining_data,
+                          mtry = 6,
+                          importance = TRUE)
+final.test1
+```
+</br>
+### Apply to the Data We Set Aside
+```{r Apply mtry equals 6}
+test1_estimate = predict(final.test1, saved_data, type="prob")[,2]
+```
+</br>
+### MSE
+```{r mtry equals 6 MSE}
+mean((test1_estimate - saved_data$cs_power_conf)^2)
+# 0.1150433
+```
+</br>
+## mtry = 7
+```{r Attempt 2}
+final.test2 = randomForest(factor(cs_power_conf)~., 
+                          data = remaining_data,
+                          mtry = 7,
+                          importance = TRUE)
+final.test2
+```
+### Apply to the Data We Set Aside
+```{r Apply mtry equals 7}
+test2_estimate = predict(final.test2, saved_data, type="prob")[,2]
+```
+### MSE
+```{r mtry equals 7 MSE}
+mean((test2_estimate - saved_data$cs_power_conf)^2)
+# 0.1154801
+```
+</br>
+## mtry = 8
+```{r Attempt 3}
+final.test3 = randomForest(factor(cs_power_conf)~., 
+                          data = remaining_data,
+                          mtry = 8,
+                          importance = TRUE)
+final.test3
+```
+</br>
+### Apply to the Data We Set Aside
+```{r Apply mtry equals 8}
+test3_estimate = predict(final.test3, saved_data, type="prob")[,2]
+```
+</br>
+### MSE
+```{r mtry equals 8 MSE}
+mean((test3_estimate - saved_data$cs_power_conf)^2)
+# 0.1160193
+```
+</br>
+## mtry = 4
+```{r Attempt 4}
+final.test4 = randomForest(factor(cs_power_conf)~., 
+                          data = remaining_data,
+                          mtry = 4,
+                          importance = TRUE)
+final.test4
+```
+</br>
+### Apply to the Data We Set Aside
+```{r Apply mtry equals 4}
+test4_estimate = predict(final.test4, saved_data, type="prob")[,2]
+```
+</br>
+### MSE
+```{r mtry equals 4 MSE}
+mean((test4_estimate - saved_data$cs_power_conf)^2)
+# 0.1129159
+```
+</br>
+## mtry = 3
+```{r Attempt 5}
+final.test5 = randomForest(factor(cs_power_conf)~., 
+                          data = remaining_data,
+                          mtry = 3,
+                          importance = TRUE)
+final.test5
+```
+</br>
+### Apply to the Data We Set Aside
+```{r Apply mtry equals 3}
+test5_estimate = predict(final.test5, saved_data, type="prob")[,2]
+```
+</br>
+### MSE
+```{r mtry equals 3 MSE}
+mean((test5_estimate - saved_data$cs_power_conf)^2)
+# 0.1115967
+```
+</br>
+## mtry = 2
+```{r Attempt 6}
+final.test6 = randomForest(factor(cs_power_conf)~., 
+                          data = remaining_data,
+                          mtry = 2,
+                          importance = TRUE)
+final.test6
+```
+</br>
+### Apply to the Data We Set Aside
+```{r Apply mtry equals 2}
+test6_estimate = predict(final.test6, saved_data, type="prob")[,2]
+```
+</br>
+### MSE
+```{r mtry equals 2 MSE}
+mean((test6_estimate - saved_data$cs_power_conf)^2)
+# 0.1108402
+```
+</br>
+## mtry = 14
+```{r Attempt 7}
+final.test7 = randomForest(factor(cs_power_conf)~., 
+                          data = remaining_data,
+                          mtry = 14,
+                          importance = TRUE)
+final.test7
+```
+</br>
+### Apply the to Data We Set Aside
+```{r Apply mtry equals 14}
+test7_estimate = predict(final.test7, saved_data, type="prob")[,2]
+```
+</br>
+### MSE
+```{r mtry equals 14 MSE}
+mean((test7_estimate - saved_data$cs_power_conf)^2)
+# 0.116568
+```
+The best model is the Random Forest Model where mtry = 2
+
+### Redefine the Variables From Test 6 to Represent the Best Model
+```{r Best}
+best_model = final.test6
+best_estimate = test6_estimate
+```
+</br>
+### Confusion Matrix
+```{r Best Confusion Matrix}
+best_cm= predict(best_model, saved_data)
+table(best_cm, saved_data$cs_power_conf)
+```
+</br>
+### Important Variables
+```{r Best Important Variables}
+importance(best_model)
+
+varImpPlot(best_model)
+```
+</br>
+### Print a Visually Appealing Confusion Matrix
+```{r Call the Visually Appealing Confusion Matrix Function: Best Model}
+# MSE Information
+best_mse = mean((best_estimate - saved_data$cs_power_conf)^2)
+
+# Confusion Matrix Information
+cm <- confusionMatrix(data = best_cm, 
+                      reference = factor(saved_data$cs_power_conf))
+
+draw_confusion_matrix(cm,"Best Final Model", best_mse)
+```
+</br>
+</br>
+<font size="4">
+**The Appendix - R Code written for Analysis Above **
+</font>
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+
+```
